@@ -1,0 +1,5 @@
+streamlit==1.40.1          # Streamlit for frontend interface
+openai==1.54.4             # OpenAI SDK for embedding and language models
+pandas==2.2.3              # Data manipulation for CSV handling
+python-dotenv==1.0.1       # Load environment variables from .env
+pinecone-client            # Ensure to install latest as it wasn't detected in this environment
