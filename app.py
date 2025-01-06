@@ -1,86 +1,139 @@
-import streamlit as st
-from generations import get_response
 import time
+import streamlit as st
+
+# Import your back-end logic
+from generations import (
+    get_response,
+    ingest_additional_knowledge,
+    store_chat_in_pinecone,
+    KNOWLEDGE_INDEX_NAME,
+    CHAT_INDEX_NAME
+)
 
 def main():
-    st.set_page_config(page_title="Crustdata API Assistant", page_icon="🤖", layout="wide")
+    # ---------------------------------------------------
+    # 1. Basic Page Config
+    # ---------------------------------------------------
+    st.set_page_config(
+        page_title="Crustdata API Assistant",
+        page_icon="🤖",
+        layout="wide"
+    )
 
-    # Custom CSS for better styling
+    # ---------------------------------------------------
+    # 2. Custom CSS
+    # ---------------------------------------------------
     st.markdown("""
     <style>
     .stApp {
-        background-color: #f0f2f6;
+        background-color: #f8f9fc;
     }
     .chat-container {
-        background-color: white;
+        background-color: #ffffff;
         border-radius: 10px;
         padding: 20px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .user-message, .assistant-message {
+        border-radius: 15px;
+        padding: 10px 15px;
+        margin: 5px 0;
     }
     .user-message {
         background-color: #e1f5fe;
-        border-radius: 20px;
-        padding: 10px 15px;
-        margin: 5px 0;
     }
     .assistant-message {
-        background-color: #f0f4c3;
-        border-radius: 20px;
-        padding: 10px 15px;
-        margin: 5px 0;
+        background-color: #fff9c4;
     }
     </style>
     """, unsafe_allow_html=True)
 
     st.title("🤖 Crustdata API Assistant")
 
-    # Sidebar with additional options
-    st.sidebar.title("Options")
-    show_context = st.sidebar.checkbox("Show Context", value=False)
-    max_messages = st.sidebar.slider("Max Chat History", min_value=5, max_value=50, value=10)
+    # Show which Pinecone indexes we're using
+    st.write(f"**Knowledge Base Index:** `{KNOWLEDGE_INDEX_NAME}`")
+    st.write(f"**Chat History Index:** `{CHAT_INDEX_NAME}`")
 
-    # Initialize session state
+    # ---------------------------------------------------
+    # 3. Initialize Session State for Chat
+    # ---------------------------------------------------
     if "messages" not in st.session_state:
-        st.session_state.messages = []
+        st.session_state["messages"] = []
 
-    # Display chat messages
+    # ---------------------------------------------------
+    # 4. Knowledge Ingestion Section
+    # ---------------------------------------------------
+    st.subheader("Add New Knowledge")
+    with st.expander("Ingest Additional Documentation or Q&A"):
+        st.markdown(
+            f"Paste **text** from Slack Q&As, user Q&As, or any new documentation below. "
+            f"This data will be stored in **'{KNOWLEDGE_INDEX_NAME}'** for future queries."
+        )
+        doc_text = st.text_area("Text to Ingest", height=120, placeholder="Paste your doc or Q&A here...")
+        doc_source = st.text_input("Source / Tag (optional)", placeholder="e.g., Slack #support channel")
+
+        if st.button("Ingest Document"):
+            if doc_text.strip():
+                metadata = {"source": doc_source} if doc_source else {}
+                success = ingest_additional_knowledge(doc_text, metadata)
+                if success:
+                    st.success("Document ingestion successful!")
+                else:
+                    st.error("Document ingestion failed.")
+            else:
+                st.warning("Please enter some text to ingest.")
+
+    # ---------------------------------------------------
+    # 5. Display Current Conversation
+    # ---------------------------------------------------
+    st.subheader("Chat with the Crustdata Assistant")
+    st.write("Ask any question about Crustdata APIs, including newly ingested data.")
+
     st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-    for message in st.session_state.messages[-max_messages:]:
-        with st.chat_message(message["role"]):
-            st.markdown(f"<div class='{message['role']}-message'>{message['content']}</div>", unsafe_allow_html=True)
+    for msg in st.session_state["messages"]:
+        if msg["role"] == "user":
+            st.markdown(f"<div class='user-message'>{msg['content']}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='assistant-message'>{msg['content']}</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # User input
-    prompt = st.chat_input("What's your question about Crustdata API?")
+    # ---------------------------------------------------
+    # 6. Chat Input (Using a Form)
+    # ---------------------------------------------------
+    with st.form(key="chat_form"):
+        user_query_local = st.text_input("Your question:", placeholder="E.g., How do I search by location?")
+        submitted = st.form_submit_button("Submit Query")
 
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(f"<div class='user-message'>{prompt}</div>", unsafe_allow_html=True)
+        if submitted:
+            # 1) Store user message
+            if user_query_local.strip():
+                st.session_state["messages"].append({"role": "user", "content": user_query_local})
+                store_chat_in_pinecone("user", user_query_local)
 
-        # Show a loading spinner while generating response
-        with st.spinner("Thinking..."):
-            response = get_response(prompt)
-            time.sleep(1)  # Simulate processing time
+                # 2) Generate assistant response
+                with st.spinner("Thinking..."):
+                    assistant_resp = get_response(user_query_local)
+                    time.sleep(0.5)
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        with st.chat_message("assistant"):
-            st.markdown(f"<div class='assistant-message'>{response}</div>", unsafe_allow_html=True)
+                # 3) Store assistant response
+                st.session_state["messages"].append({"role": "assistant", "content": assistant_resp})
+                store_chat_in_pinecone("assistant", assistant_resp)
 
-        # Show context if enabled
-        if show_context:
-            with st.expander("View Context"):
-                st.write("Context used for generating the response:")
-                st.code(response[:200] + "...")  # Display first 200 characters of context
+                st.success("Response received!")
+            else:
+                st.warning("Please enter a question before submitting.")
 
-    # Add a button to clear chat history
-    if st.button("Clear Chat History"):
-        st.session_state.messages = []
-        st.experimental_rerun()
+    # ---------------------------------------------------
+    # 7. Clear Conversation Button
+    # ---------------------------------------------------
+    if st.button("Clear Conversation"):
+        st.session_state["messages"] = []
+        st.info("Conversation cleared. You can start fresh.")
 
-    # Footer
     st.markdown("---")
-    st.markdown("Powered by OpenAI GPT-4 and Pinecone")
+    st.markdown("Powered by **OpenAI GPT** and **Pinecone** | © 2025 Crustdata")
+
 
 if __name__ == "__main__":
     main()
